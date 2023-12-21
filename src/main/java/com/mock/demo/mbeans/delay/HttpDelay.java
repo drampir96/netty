@@ -1,24 +1,24 @@
-package com.mock.demo.mbeans;
+package com.mock.demo.mbeans.delay;
 
 import org.springframework.jmx.export.annotation.ManagedAttribute;
 import org.springframework.jmx.export.annotation.ManagedResource;
 import org.springframework.stereotype.Component;
 
-@ManagedResource(objectName="com.stub.bean:name=httpDelay")
+@ManagedResource(objectName="com.stub.bean.http:name=Delay")
 @Component
 public class HttpDelay implements HttpDelayMXBean {
 
-    private int intValue=2;
+    private int studentsDelay = 200;
 
     @ManagedAttribute
     @Override
-    public int getIntValue() {
-        return this.intValue;
+    public int getStudentsDelay() {
+        return this.studentsDelay;
     }
 
     @ManagedAttribute
     @Override
-    public void setIntValue(int intValue) {
-        this.intValue = intValue;
+    public void setStudentsDelay(int studentsDelay) {
+        this.studentsDelay = studentsDelay;
     }
 }
