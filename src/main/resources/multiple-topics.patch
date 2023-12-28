@@ -1,0 +1,133 @@
+diff --git a/main.go b/main.go
+index 0b5fe4f..88c673f 100644
+--- a/main.go
++++ b/main.go
+@@ -133,7 +133,19 @@ func main() {
+ 	// validatorMap := make(map[string]validator.Entry)
+ 	validatorCh := make(chan validator.Entry, 16)
+ 	go validator.MainRoutine(validatorCh)
+-	go validator.KafkaConsumer(validatorCh)
++	consumers, err := validator.SetupReader()
++	if err != nil {
++		slog.Error(
++			"failed to setup kafka reader",
++			"err", err,
++			"app", "validator",
++		)
++	} else {
++		for _, reader := range consumers {
++			go validator.KafkaConsumer(validatorCh, reader)
++		}
++	}
++
+ 	r.Put("/validator", validator.MkServer(validatorCh))
+ 
+ 	slog.Info("Ready to serve requests...")
+diff --git a/validator/consumer.go b/validator/consumer.go
+index 48a7fb9..54b6b07 100644
+--- a/validator/consumer.go
++++ b/validator/consumer.go
+@@ -53,8 +53,9 @@ func MapStatusMarkJob2EntryStatus(s StatusMarkJob) EntryStatus {
+ 
+ const CONSUMER_GROUP_ID string = "consumer-group-lt-validator"
+ 
+-func setupReader() (*kafka.Reader, error) {
+-	var url, topic string
++func SetupReader() ([]*kafka.Reader, error) {
++	var url string
++	var topics []string
+ 	var ok bool
+ 	var dialer *kafka.Dialer
+ 
+@@ -66,12 +67,14 @@ func setupReader() (*kafka.Reader, error) {
+ 		return nil, errors.New("KAFKA_URL is not set")
+ 	}
+ 
+-	if topic, ok = os.LookupEnv("KAFKA_TOPIC"); !ok {
++	if topicvar, ok := os.LookupEnv("KAFKA_TOPIC"); !ok {
+ 		slog.Error(
+ 			"KAFKA_TOPIC is not set",
+ 			"app", "vendor",
+ 		)
+ 		return nil, errors.New("KAFKA_TOPIC is not set")
++	} else {
++		topics = strings.Split(topicvar, ",")
+ 	}
+ 
+ 	privateKeyFilePath, okPrivate := os.LookupEnv("KAFKA_SSL_PRIVATE_KEY")
+@@ -151,29 +154,27 @@ func setupReader() (*kafka.Reader, error) {
+ 		return nil, errors.New("one (or two) of KAFKA_SSL_.* variable wasn't set")
+ 	}
+ 
+-	return kafka.NewReader(kafka.ReaderConfig{
+-		Brokers:  strings.Split(url, ","),
+-		GroupID:  CONSUMER_GROUP_ID,
+-		Topic:    topic,
+-		MinBytes: 10e3, // 10KB
+-		MaxBytes: 10e6, // 10MB
+-		Dialer:   dialer,
+-	}), nil
+-
+-}
+-
+-func KafkaConsumer(ch chan Entry) {
+-	r, err := setupReader()
+-	if err != nil {
+-		slog.Error(
+-			"failed to setup kafka reader",
+-			"err", err,
+-			"app", "validator",
++	var consumers = make([]*kafka.Reader, len(topics))
++
++	for _, t := range topics {
++		consumers = append(
++			consumers,
++			kafka.NewReader(kafka.ReaderConfig{
++				Brokers:  strings.Split(url, ","),
++				GroupID:  CONSUMER_GROUP_ID,
++				Topic:    t,
++				MinBytes: 10e3, // 10KB
++				MaxBytes: 10e6, // 10MB
++				Dialer:   dialer,
++			}),
+ 		)
+-
+-		return
+ 	}
+ 
++	return consumers, nil
++
++}
++
++func KafkaConsumer(ch chan Entry, r *kafka.Reader) {
+ 	slog.Info("consuming", "app", "validator")
+ 
+ 	for {
+@@ -211,6 +212,7 @@ func KafkaConsumer(ch chan Entry) {
+ 			RequestId:  markResult.Header.RequestId,
+ 			Status:     MapStatusMarkJob2EntryStatus(markResult.Message.StatusMarkJob),
+ 			TimeFinish: &markResult.Header.Time,
++			Topic:      m.Topic,
+ 		}
+ 	}
+ 
+diff --git a/validator/validator.go b/validator/validator.go
+index f0be1e9..90d2d22 100644
+--- a/validator/validator.go
++++ b/validator/validator.go
+@@ -45,6 +45,7 @@ type Entry struct {
+ 	Status     EntryStatus
+ 	TimeStart  *time.Time
+ 	TimeFinish *time.Time
++	Topic      string
+ }
+ 
+ // TODO: use non-blocking method
+@@ -54,6 +55,7 @@ func SubmitPoint(w influxdb2Api.WriteAPIBlocking, entry *Entry) error {
+ 		AddField("start", *entry.TimeStart).
+ 		AddField("value", entry.TimeFinish.Sub(*entry.TimeStart).Seconds()).
+ 		AddField("status", entry.Status.String()).
++		AddField("topic", entry.Topic).
+ 		SetTime(*entry.TimeStart) // REVIEW: use finish time?
+ 
+ 	err := w.WritePoint(context.Background(), p)
